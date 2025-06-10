@@ -19,18 +19,14 @@ jobs:
       with:
         go-version: '1.24'
 
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-
-    - name: Install dependencies
-      run: go mod download
+    - name: Set up BPF toolchain
+      run: |
+        sudo apt update
+        sudo apt install -y llvm clang libbpf-dev libc6-dev libc6-dev-i386 linux-headers-$(uname -r)
+        sudo ln -sf /usr/include/$(uname -m)-linux-gnu/asm /usr/include/asm
+        sudo ln -sf /usr/include/$(uname -m)-linux-gnu/bits /usr/include/bits
+        sudo ln -sf /usr/include/$(uname -m)-linux-gnu/gnu /usr/include/gnu
+        sudo ln -sf /usr/include/$(uname -m)-linux-gnu/sys /usr/include/sys
 
     - name: Lint with golangci-lint
       uses: golangci/golangci-lint-action@v8
