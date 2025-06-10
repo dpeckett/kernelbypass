@@ -25,9 +25,8 @@ import (
 )
 
 const (
-	datagramSize = 1472  // Largest UDP packet possible over the public internet
-	flows        = 64    // Number of flows to simulate (max is 16384)
-	port         = 12345 // Port to listen for UDP datagrams
+	flows = 64    // Number of flows to simulate (max is 16384)
+	port  = 12345 // Port to listen for UDP datagrams
 )
 
 func main() {
@@ -198,15 +197,33 @@ func runReceiver(c *cli.Context) error {
 	return nic.Start(c.Context)
 }
 
+// Realistic packet sizes you might encounter on the internet backbone.
+var realisticPacketSizes = []int{
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, // Common small packets (e.g., ACKs)
+	576, 576, // Legacy default MTU for some protocols
+	1472, 1472, 1472, 1472, 1472, 1472, // Full-size packets (max Ethernet frame size)
+	128, 128, 128, // DNS or small application payloads
+	512, 512, 512, // Mid-sized payloads (e.g., small downloads)
+	1000, 1000, // FTP/HTTP small segment
+	1472, 1472, 1472, // More full-size packets
+	40, 40, // TCP SYN packets (minimal headers)
+	64, 64, 64, // More ACKs or keepalives
+	1472, 1472, 1472, 1472, // Full MTU packets
+	900, 900, // Non-standard but plausible sizes
+	200, 300, 400, // Application specific
+	1472, 1472, 1472, // Ending with more full MTU packets
+}
+
 var _ kernelbypass.Handler = (*SendHandler)(nil)
 
 type SendHandler struct {
-	srcMAC    net.HardwareAddr
-	srcAddr   *net.UDPAddr
-	dstMAC    net.HardwareAddr
-	dstAddr   *net.UDPAddr
-	payload   []byte
-	sentBytes atomic.Int64
+	srcMAC     net.HardwareAddr
+	srcAddr    *net.UDPAddr
+	dstMAC     net.HardwareAddr
+	dstAddr    *net.UDPAddr
+	payload    []byte
+	sentFrames atomic.Int64
+	sentBytes  atomic.Int64
 }
 
 func (h *SendHandler) ReceivedFrame(queueID int, frame []byte) {
@@ -217,13 +234,17 @@ func (h *SendHandler) NextFrame(queueID int, frame []byte) (int, error) {
 	srcAddr := *h.srcAddr
 	srcAddr.Port = 49152 + int(new(maphash.Hash).Sum64()%flows)
 
+	datagramSize := realisticPacketSizes[new(maphash.Hash).Sum64()%uint64(len(realisticPacketSizes))]
+
 	copy(frame[:udp.PayloadOffsetIPv4], h.payload[:datagramSize])
 	frameLen, err := udp.Encode(frame, h.srcMAC, h.dstMAC, &srcAddr, h.dstAddr, datagramSize, false)
 	if err != nil {
 		return 0, err
 	}
 
+	h.sentFrames.Add(1)
 	h.sentBytes.Add(int64(frameLen))
+
 	return frameLen, nil
 }
 
@@ -236,14 +257,19 @@ func (h *SendHandler) Report(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			sentPPS := h.sentFrames.Swap(0)
 			sentMbit := float64(h.sentBytes.Swap(0)*8) / 1_000_000
-			slog.Info("Sender throughput", slog.Float64("sent_mbps", sentMbit))
+			slog.Info("Sender throughput",
+				slog.Float64("mbps", sentMbit), slog.Int64("pps", sentPPS))
 		}
 	}
 }
 
+var _ kernelbypass.Handler = (*ReceiveHandler)(nil)
+
 type ReceiveHandler struct {
-	receivedBytes atomic.Int64
+	receivedFrames atomic.Int64
+	receivedBytes  atomic.Int64
 }
 
 func (h *ReceiveHandler) ReceivedFrame(queueID int, frame []byte) {
@@ -252,6 +278,7 @@ func (h *ReceiveHandler) ReceivedFrame(queueID int, frame []byte) {
 		slog.Warn("Failed to decode UDP frame", slog.Any("error", err))
 	}
 
+	h.receivedFrames.Add(1)
 	h.receivedBytes.Add(int64(len(frame)))
 }
 
@@ -268,8 +295,11 @@ func (h *ReceiveHandler) Report(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			receivedPPS := h.receivedFrames.Swap(0)
 			receivedMbit := float64(h.receivedBytes.Swap(0)*8) / 1_000_000
-			slog.Info("Receiver throughput", slog.Float64("received_mbps", receivedMbit))
+			slog.Info("Receiver throughput",
+				slog.Float64("mbps", receivedMbit),
+				slog.Int64("pps", receivedPPS))
 		}
 	}
 }
