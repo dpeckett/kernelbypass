@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/safchain/ethtool"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -26,6 +27,8 @@ const (
 )
 
 func TestNetworkInterface(t *testing.T) {
+	const queues = 4 // Number of queues to use for the veth pair
+
 	binPath := filepath.Join(t.TempDir(), "kernelbypass-demo")
 	cmd := exec.Command("go", "build", "-o", binPath, ".")
 	cmd.Dir = filepath.Join("cmd")
@@ -44,9 +47,13 @@ func TestNetworkInterface(t *testing.T) {
 	// Setup veth pair
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: hostIf,
+			Name:        hostIf,
+			NumTxQueues: queues,
+			NumRxQueues: queues,
 		},
-		PeerName: nsIf,
+		PeerName:        nsIf,
+		PeerNumTxQueues: uint32(queues),
+		PeerNumRxQueues: uint32(queues),
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
@@ -55,6 +62,16 @@ func TestNetworkInterface(t *testing.T) {
 	t.Cleanup(func() {
 		_ = netlink.LinkDel(veth)
 	})
+
+	ethHandle, err := ethtool.NewEthtool()
+	require.NoError(t, err)
+	t.Cleanup(ethHandle.Close)
+
+	_, err = ethHandle.SetChannels(hostIf, ethtool.Channels{
+		TxCount: uint32(queues),
+		RxCount: uint32(queues),
+	})
+	require.NoError(t, err)
 
 	// Move peer to new namespace
 	peer, err := netlink.LinkByName(nsIf)
@@ -77,6 +94,20 @@ func TestNetworkInterface(t *testing.T) {
 
 	// Configure peer inside new namespace
 	require.NoError(t, doInNamespace(testNS, func() error {
+		ethHandle, err := ethtool.NewEthtool()
+		if err != nil {
+			return err
+		}
+		defer ethHandle.Close()
+
+		_, err = ethHandle.SetChannels(nsIf, ethtool.Channels{
+			TxCount: uint32(queues),
+			RxCount: uint32(queues),
+		})
+		if err != nil {
+			return err
+		}
+
 		nsLink, err := netlink.LinkByName(nsIf)
 		if err != nil {
 			return err
