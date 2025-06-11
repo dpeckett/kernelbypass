@@ -1,6 +1,7 @@
 package mac
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net"
@@ -10,7 +11,7 @@ import (
 )
 
 // Resolve resolves the MAC address for the given IP address using the provided link.
-func Resolve(link netlink.Link, localAddr *net.UDPAddr, ip net.IP) (net.HardwareAddr, error) {
+func Resolve(ctx context.Context, link netlink.Link, localAddr *net.UDPAddr, ip net.IP) (net.HardwareAddr, error) {
 	mac, err := searchNeighborList(link, ip)
 	if err == nil {
 		return mac, nil
@@ -44,7 +45,7 @@ func Resolve(link netlink.Link, localAddr *net.UDPAddr, ip net.IP) (net.Hardware
 		}
 
 		return nil
-	}, retry.Attempts(3), retry.DelayType(retry.BackOffDelay), retry.MaxDelay(50))
+	}, retry.Context(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve MAC address for %s: %w", ip, err)
 	}

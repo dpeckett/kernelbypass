@@ -16,7 +16,7 @@ var (
 )
 
 // Decode extracts the source address and payload from a UDP ethernet frame.
-func Decode(frame []byte, skipChecksumValidation bool) (*net.UDPAddr, []byte, error) {
+func Decode(frame []byte, addr *net.UDPAddr, skipChecksumValidation bool) ([]byte, error) {
 	var (
 		udp     header.UDP
 		srcAddr tcpip.Address
@@ -24,7 +24,7 @@ func Decode(frame []byte, skipChecksumValidation bool) (*net.UDPAddr, []byte, er
 	)
 
 	if len(frame) < header.EthernetMinimumSize {
-		return nil, nil, errors.New("frame too short")
+		return nil, errors.New("frame too short")
 	}
 
 	eth := header.Ethernet(frame)
@@ -34,7 +34,7 @@ func Decode(frame []byte, skipChecksumValidation bool) (*net.UDPAddr, []byte, er
 	case header.IPv4ProtocolNumber:
 		ip := header.IPv4(frame[header.EthernetMinimumSize:])
 		if !ip.IsValid(len(ip)) || ip.Protocol() != uint8(header.UDPProtocolNumber) {
-			return nil, nil, errors.New("not a valid IPv4 UDP packet")
+			return nil, errors.New("not a valid IPv4 UDP packet")
 		}
 		srcAddr = ip.SourceAddress()
 		dstAddr = ip.DestinationAddress()
@@ -43,14 +43,14 @@ func Decode(frame []byte, skipChecksumValidation bool) (*net.UDPAddr, []byte, er
 	case header.IPv6ProtocolNumber:
 		ip := header.IPv6(frame[header.EthernetMinimumSize:])
 		if !ip.IsValid(len(ip)) || ip.TransportProtocol() != header.UDPProtocolNumber {
-			return nil, nil, errors.New("not a valid IPv6 UDP packet")
+			return nil, errors.New("not a valid IPv6 UDP packet")
 		}
 		srcAddr = ip.SourceAddress()
 		dstAddr = ip.DestinationAddress()
 		udp = header.UDP(ip.Payload())
 
 	default:
-		return nil, nil, errors.New("unsupported ethertype")
+		return nil, errors.New("unsupported ethertype")
 	}
 
 	lengthValid, csumValid := header.UDPValid(
@@ -63,13 +63,15 @@ func Decode(frame []byte, skipChecksumValidation bool) (*net.UDPAddr, []byte, er
 		skipChecksumValidation,
 	)
 	if !lengthValid || !csumValid {
-		return nil, nil, errors.New("invalid UDP checksum or length")
+		return nil, errors.New("invalid UDP checksum or length")
 	}
 
-	return &net.UDPAddr{
-		IP:   net.IP(srcAddr.AsSlice()),
-		Port: int(udp.SourcePort()),
-	}, udp.Payload(), nil
+	if addr != nil {
+		addr.IP = net.IP(srcAddr.AsSlice())
+		addr.Port = int(udp.SourcePort())
+	}
+
+	return udp.Payload(), nil
 }
 
 // Encode constructs a UDP ethernet frame with the given parameters.

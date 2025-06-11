@@ -29,9 +29,9 @@ const (
 func TestNetworkInterface(t *testing.T) {
 	const queues = 4 // Number of queues to use for the veth pair
 
-	binPath := filepath.Join(t.TempDir(), "kernelbypass-demo")
+	binPath := filepath.Join(t.TempDir(), "udpperf")
 	cmd := exec.Command("go", "build", "-o", binPath, ".")
-	cmd.Dir = filepath.Join("cmd")
+	cmd.Dir = filepath.Join("cmd/udpperf")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Run())

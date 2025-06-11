@@ -1,8 +1,8 @@
-module github.com/dpeckett/kernelbypass/cmd
+module github.com/dpeckett/kernelbypass/cmd/udpperf
 
 go 1.24.3
 
-replace github.com/dpeckett/kernelbypass => ../
+replace github.com/dpeckett/kernelbypass => ../../
 
 require (
 	github.com/avast/retry-go/v4 v4.6.1

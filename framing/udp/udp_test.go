@@ -35,7 +35,8 @@ func TestEncodeDecode_IPv4(t *testing.T) {
 		require.NoError(t, err)
 
 		// Pass the encoded frame to Decode
-		decodedAddr, decodedPayload, err := udp.Decode(frame[:n], false)
+		var decodedAddr net.UDPAddr
+		decodedPayload, err := udp.Decode(frame[:n], &decodedAddr, false)
 		require.NoError(t, err)
 		require.Equal(t, srcAddr.IP.String(), decodedAddr.IP.String())
 		require.Equal(t, srcAddr.Port, decodedAddr.Port)
@@ -54,7 +55,7 @@ func TestEncodeDecode_IPv4(t *testing.T) {
 		payloadOffset := udpStart + header.UDPMinimumSize
 		frame[payloadOffset] ^= 0xFF
 
-		_, _, err = udp.Decode(frame[:n], false)
+		_, err = udp.Decode(frame[:n], nil, false)
 		require.Error(t, err)
 	})
 }
@@ -83,7 +84,8 @@ func TestEncodeDecode_IPv6(t *testing.T) {
 		n, err := udp.Encode(frame, srcMAC, dstMAC, srcAddr, dstAddr, len(payload), false)
 		require.NoError(t, err)
 
-		decodedAddr, decodedPayload, err := udp.Decode(frame[:n], false)
+		var decodedAddr net.UDPAddr
+		decodedPayload, err := udp.Decode(frame[:n], &decodedAddr, false)
 		require.NoError(t, err)
 		require.Equal(t, srcAddr.IP.String(), decodedAddr.IP.String())
 		require.Equal(t, srcAddr.Port, decodedAddr.Port)
@@ -103,7 +105,7 @@ func TestEncodeDecode_IPv6(t *testing.T) {
 		payloadOffset := udpStart + header.UDPMinimumSize
 		frame[payloadOffset] ^= 0xFF
 
-		_, _, err = udp.Decode(frame[:n], false)
+		_, err = udp.Decode(frame[:n], nil, false)
 		require.Error(t, err)
 	})
 }

@@ -46,7 +46,45 @@ func getOptionsForDevice(link netlink.Link) (*NetworkInterfaceOptions, error) {
 		return nil, fmt.Errorf("failed to get hardware ID: %w", err)
 	}
 
-	// TODO: match specific drivers or hardware IDs and return tuned configurations.
+	numQueues, err := getNumQueues(link)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get number of queues: %w", err)
+	}
+
+	if driverName == "ena" {
+		if link.Attrs().MTU > 3818 {
+			return nil, fmt.Errorf("ena driver does not support XDP MTU > 3818, got %d", link.Attrs().MTU)
+		}
+
+		ethHandle, err := ethtool.NewEthtool()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ethtool handle: %w", err)
+		}
+		defer ethHandle.Close()
+
+		channels, err := ethHandle.GetChannels(link.Attrs().Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get channels: %w", err)
+		}
+
+		if numQueues > int(channels.MaxCombined)/2 {
+			return nil, fmt.Errorf("ena driver oonly supports up to %d combined queues, got %d",
+				channels.MaxCombined/2, numQueues)
+		}
+
+		return &NetworkInterfaceOptions{
+			NumQueues:   numQueues,
+			AttachFlags: xdp.DefaultXdpFlags,
+			SocketOpts: &xdp.SocketOptions{
+				NumFrames:              8192,
+				FrameSize:              2048,
+				FillRingNumDescs:       4096,
+				CompletionRingNumDescs: 4096,
+				RxRingNumDescs:         4096,
+				TxRingNumDescs:         4096,
+			},
+		}, nil
+	}
 
 	slog.Debug("Using generic configuration for interface",
 		slog.String("interface", link.Attrs().Name),
@@ -54,13 +92,16 @@ func getOptionsForDevice(link netlink.Link) (*NetworkInterfaceOptions, error) {
 		slog.String("hardwareID", hardwareID),
 	)
 
-	return defaultOptions(link)
+	return &NetworkInterfaceOptions{
+		NumQueues:   numQueues,
+		AttachFlags: xdp.DefaultXdpFlags,
+	}, nil
 }
 
-func defaultOptions(link netlink.Link) (*NetworkInterfaceOptions, error) {
+func getNumQueues(link netlink.Link) (int, error) {
 	ethHandle, err := ethtool.NewEthtool()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ethtool handle: %w", err)
+		return -1, fmt.Errorf("failed to create ethtool handle: %w", err)
 	}
 	defer ethHandle.Close()
 
@@ -68,7 +109,7 @@ func defaultOptions(link netlink.Link) (*NetworkInterfaceOptions, error) {
 	// Not the current number of queues in use.
 	channels, err := ethHandle.GetChannels(link.Attrs().Name)
 	if err != nil && !errors.Is(err, unix.ENOTSUP) {
-		return nil, fmt.Errorf("failed to get channels: %w", err)
+		return -1, fmt.Errorf("failed to get channels: %w", err)
 	}
 
 	numRxQueues := int(channels.RxCount)
@@ -87,13 +128,10 @@ func defaultOptions(link netlink.Link) (*NetworkInterfaceOptions, error) {
 	}
 
 	if numRxQueues != numTxQueues {
-		return nil, fmt.Errorf("asymmetric RX (%d) and TX (%d) queues are not supported", numRxQueues, numTxQueues)
+		return -1, fmt.Errorf("asymmetric RX (%d) and TX (%d) queues are not supported", numRxQueues, numTxQueues)
 	}
 
-	return &NetworkInterfaceOptions{
-		NumQueues:   numRxQueues,
-		AttachFlags: xdp.DefaultXdpFlags,
-	}, nil
+	return numRxQueues, nil
 }
 
 func getHardwareID(link netlink.Link) (string, error) {
