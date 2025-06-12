@@ -127,6 +127,11 @@ func (nic *NetworkInterface) Start(ctx context.Context) error {
 	return nil
 }
 
+// NumQueues returns the number of queues configured for this network interface.
+func (nic *NetworkInterface) NumQueues() int {
+	return len(nic.xsks)
+}
+
 func (nic *NetworkInterface) processFrames(ctx context.Context, queueID int, xsk *xdp.Socket) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
