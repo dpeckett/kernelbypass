@@ -12,8 +12,31 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go all ebpf/all.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go bind ebpf/bind.c
 
+// All creates an eBPF program that intercepts all incoming packets
+// and redirects them to the XDP socket.
+func All() (*xdp.Program, error) {
+	spec, err := loadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load eBPF program: %w", err)
+	}
+
+	col, err := ebpf.NewCollection(spec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create eBPF collection: %w", err)
+	}
+
+	return &xdp.Program{
+		Program: col.Programs["xdp_sock_prog"],
+		Queues:  col.Maps["qidconf_map"],
+		Sockets: col.Maps["xsks_map"],
+	}, nil
+}
+
+// Bind creates an eBPF program that binds to the specified addresses.
+// It supports both TCP and UDP addresses, including IPv4 and IPv6.
 func Bind(addrs ...net.Addr) (*xdp.Program, error) {
 	spec, err := loadBind()
 	if err != nil {
