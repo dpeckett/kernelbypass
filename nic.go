@@ -195,7 +195,7 @@ func pollWithContext(ctx context.Context, xsk *xdp.Socket) (numReceived int, num
 		case <-ctx.Done():
 			return 0, 0, ctx.Err()
 		default:
-			numReceived, numCompleted, err := xsk.Poll(100)
+			numReceived, numCompleted, err := xsk.Poll(1)
 			if err != nil {
 				if errors.Is(err, unix.EAGAIN) {
 					continue
