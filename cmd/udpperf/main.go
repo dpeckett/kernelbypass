@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/dpeckett/kernelbypass/framing/udp"
 	"github.com/urfave/cli/v2"
 	"github.com/vishvananda/netlink"
+	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
 const (
@@ -32,6 +34,8 @@ const (
 )
 
 func main() {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
 	app := &cli.App{
 		Name:  "udpperf",
 		Usage: "A high-performance UDP datagram sender/receiver using kernel bypass techniques",
@@ -62,6 +66,10 @@ func main() {
 						Usage: "Use realistic packet sizes for UDP datagrams",
 						Value: true,
 					},
+					&cli.StringFlag{
+						Name:  "cpu-profile",
+						Usage: "Path to write CPU profiling output",
+					},
 				},
 				ArgsUsage: "<receiver ip>",
 				Action:    runSender,
@@ -80,6 +88,10 @@ func main() {
 						Name:  "skip-checksum",
 						Usage: "Skip UDP checksum validation",
 						Value: false,
+					},
+					&cli.StringFlag{
+						Name:  "cpu-profile",
+						Usage: "Path to write CPU profiling output",
 					},
 				},
 				Action: runReceiver,
@@ -103,6 +115,15 @@ func runSender(c *cli.Context) error {
 	timeout := c.Duration("timeout")
 	skipChecksum := c.Bool("skip-checksum")
 	realisticSizes := c.Bool("realistic-sizes")
+
+	if cpuProfilePath := c.String("cpu-profile"); cpuProfilePath != "" {
+		f, err := os.Create(cpuProfilePath)
+		if err != nil {
+			return fmt.Errorf("failed to create CPU profile file: %w", err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	ctx, cancel := signal.NotifyContext(c.Context, os.Interrupt, os.Kill)
 	defer cancel()
@@ -151,14 +172,24 @@ func runSender(c *cli.Context) error {
 		return fmt.Errorf("failed to resolve destination MAC address: %w", err)
 	}
 
+	src := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(addrs[0].(*net.UDPAddr).IP.To4()),
+		Port:     uint16(port),
+		LinkAddr: tcpip.LinkAddress(link.Attrs().HardwareAddr),
+	}
+
+	dst := &tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(dstAddr.IP.To4()),
+		Port:     uint16(port),
+		LinkAddr: tcpip.LinkAddress(dstMAC),
+	}
+
 	payload := make([]byte, math.MaxUint16)
 	_, _ = rand.Read(payload)
 
 	h := &SendHandler{
-		srcMAC:         link.Attrs().HardwareAddr,
-		srcAddr:        addrs[0].(*net.UDPAddr),
-		dstMAC:         dstMAC,
-		dstAddr:        dstAddr,
+		src:            src,
+		dst:            dst,
 		payload:        payload,
 		skipChecksum:   skipChecksum,
 		realisticSizes: realisticSizes,
@@ -189,6 +220,15 @@ func runSender(c *cli.Context) error {
 func runReceiver(c *cli.Context) error {
 	name := c.String("interface")
 	skipChecksum := c.Bool("skip-checksum")
+
+	if cpuProfilePath := c.String("cpu-profile"); cpuProfilePath != "" {
+		f, err := os.Create(cpuProfilePath)
+		if err != nil {
+			return fmt.Errorf("failed to create CPU profile file: %w", err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 
 	ctx, cancel := signal.NotifyContext(c.Context, os.Interrupt, os.Kill)
 	defer cancel()
@@ -271,10 +311,8 @@ var realisticPacketSizes = []int{
 var _ kernelbypass.Handler = (*SendHandler)(nil)
 
 type SendHandler struct {
-	srcMAC         net.HardwareAddr
-	srcAddr        *net.UDPAddr
-	dstMAC         net.HardwareAddr
-	dstAddr        *net.UDPAddr
+	src            *tcpip.FullAddress
+	dst            *tcpip.FullAddress
 	payload        []byte
 	skipChecksum   bool
 	realisticSizes bool
@@ -287,20 +325,20 @@ func (h *SendHandler) ReceivedFrame(queueID int, frame []byte) {
 }
 
 func (h *SendHandler) NextFrame(queueID int, frame []byte) (int, error) {
-	srcAddr := *h.srcAddr
-	srcAddr.Port = 49152 + int(new(maphash.Hash).Sum64()%flows)
+	src := *h.src
+	src.Port = uint16(49152 + int(new(maphash.Hash).Sum64()%flows))
 
 	var datagramSize int
 	if h.realisticSizes {
 		datagramSize = realisticPacketSizes[new(maphash.Hash).Sum64()%uint64(len(realisticPacketSizes))]
-	} else if srcAddr.IP.To4() == nil {
+	} else if src.Addr.Len() == net.IPv6len {
 		datagramSize = 1432
 	} else {
 		datagramSize = 1458
 	}
 
 	copy(frame[:udp.PayloadOffsetIPv4], h.payload[:datagramSize])
-	frameLen, err := udp.Encode(frame, h.srcMAC, h.dstMAC, &srcAddr, h.dstAddr, datagramSize, h.skipChecksum)
+	frameLen, err := udp.Encode(frame, &src, h.dst, datagramSize, h.skipChecksum)
 	if err != nil {
 		return 0, err
 	}

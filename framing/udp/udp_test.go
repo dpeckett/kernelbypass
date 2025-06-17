@@ -1,45 +1,45 @@
 package udp_test
 
 import (
+	"crypto/rand"
 	"net"
 	"testing"
 
 	"github.com/dpeckett/kernelbypass/framing/udp"
-	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestEncodeDecode_IPv4(t *testing.T) {
 	const frameSize = 1500
+	const payloadText = "Hello, UDP over Ethernet!"
 
-	srcMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
-	dstMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}
-
-	srcAddr := &net.UDPAddr{
-		IP:   net.IPv4(192, 168, 1, 1),
-		Port: 12345,
+	src := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(net.IPv4(192, 168, 1, 1).To4()),
+		Port:     12345,
+		LinkAddr: tcpip.GetRandMacAddr(),
 	}
-	dstAddr := &net.UDPAddr{
-		IP:   net.IPv4(192, 168, 1, 2),
-		Port: 54321,
+	dst := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(net.IPv4(192, 168, 1, 2).To4()),
+		Port:     54321,
+		LinkAddr: tcpip.GetRandMacAddr(),
 	}
 
-	payload := []byte("Hello, UDP over Ethernet!")
+	payload := []byte(payloadText)
 
 	t.Run("Valid", func(t *testing.T) {
 		frame := make([]byte, frameSize)
 		copy(frame[udp.PayloadOffsetIPv4:], payload)
 
-		n, err := udp.Encode(frame, srcMAC, dstMAC, srcAddr, dstAddr, len(payload), false)
+		n, err := udp.Encode(frame, &src, &dst, len(payload), false)
 		require.NoError(t, err)
 
-		// Pass the encoded frame to Decode
-		var decodedAddr net.UDPAddr
+		var decodedAddr tcpip.FullAddress
 		decodedPayload, err := udp.Decode(frame[:n], &decodedAddr, false)
 		require.NoError(t, err)
-		require.Equal(t, srcAddr.IP.String(), decodedAddr.IP.String())
-		require.Equal(t, srcAddr.Port, decodedAddr.Port)
+		require.Equal(t, src.Addr.String(), decodedAddr.Addr.String())
+		require.Equal(t, src.Port, decodedAddr.Port)
 		require.Equal(t, payload, decodedPayload)
 	})
 
@@ -47,13 +47,11 @@ func TestEncodeDecode_IPv4(t *testing.T) {
 		frame := make([]byte, frameSize)
 		copy(frame[udp.PayloadOffsetIPv4:], payload)
 
-		n, err := udp.Encode(frame, srcMAC, dstMAC, srcAddr, dstAddr, len(payload), false)
+		n, err := udp.Encode(frame, &src, &dst, len(payload), false)
 		require.NoError(t, err)
 
-		// Corrupt the first byte of the UDP payload
-		udpStart := header.EthernetMinimumSize + header.IPv4MinimumSize
-		payloadOffset := udpStart + header.UDPMinimumSize
-		frame[payloadOffset] ^= 0xFF
+		// Corrupt the first byte of the payload
+		frame[udp.PayloadOffsetIPv4] ^= 0xFF
 
 		_, err = udp.Decode(frame[:n], nil, false)
 		require.Error(t, err)
@@ -62,50 +60,107 @@ func TestEncodeDecode_IPv4(t *testing.T) {
 
 func TestEncodeDecode_IPv6(t *testing.T) {
 	const frameSize = 1500
+	const payloadText = "Hello, UDP over Ethernet!"
 
-	srcMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x03}
-	dstMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x04}
-
-	srcAddr := &net.UDPAddr{
-		IP:   net.ParseIP("2001:db8::1"),
-		Port: 12345,
+	src := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(net.ParseIP("2001:db8::1").To16()),
+		Port:     12345,
+		LinkAddr: tcpip.GetRandMacAddr(),
 	}
-	dstAddr := &net.UDPAddr{
-		IP:   net.ParseIP("2001:db8::2"),
-		Port: 54321,
+	dst := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(net.ParseIP("2001:db8::2").To16()),
+		Port:     54321,
+		LinkAddr: tcpip.GetRandMacAddr(),
 	}
 
-	payload := []byte("Hello, UDP over Ethernet!")
+	payload := []byte(payloadText)
 
 	t.Run("Valid", func(t *testing.T) {
 		frame := make([]byte, frameSize)
 		copy(frame[udp.PayloadOffsetIPv6:], payload)
 
-		n, err := udp.Encode(frame, srcMAC, dstMAC, srcAddr, dstAddr, len(payload), false)
+		n, err := udp.Encode(frame, &src, &dst, len(payload), false)
 		require.NoError(t, err)
 
-		var decodedAddr net.UDPAddr
+		var decodedAddr tcpip.FullAddress
 		decodedPayload, err := udp.Decode(frame[:n], &decodedAddr, false)
 		require.NoError(t, err)
-		require.Equal(t, srcAddr.IP.String(), decodedAddr.IP.String())
-		require.Equal(t, srcAddr.Port, decodedAddr.Port)
+		require.Equal(t, src.Addr.String(), decodedAddr.Addr.String())
+		require.Equal(t, src.Port, decodedAddr.Port)
 		require.Equal(t, payload, decodedPayload)
 	})
 
 	t.Run("ChecksumMismatch", func(t *testing.T) {
 		frame := make([]byte, frameSize)
 		copy(frame[udp.PayloadOffsetIPv6:], payload)
-		frame = frame[:udp.PayloadOffsetIPv6+len(payload)]
 
-		n, err := udp.Encode(frame, srcMAC, dstMAC, srcAddr, dstAddr, len(payload), false)
+		n, err := udp.Encode(frame, &src, &dst, len(payload), false)
 		require.NoError(t, err)
 
-		// Corrupt the first byte of the UDP payload
-		udpStart := header.EthernetMinimumSize + header.IPv6MinimumSize
-		payloadOffset := udpStart + header.UDPMinimumSize
-		frame[payloadOffset] ^= 0xFF
+		// Corrupt the first byte of the payload
+		frame[udp.PayloadOffsetIPv6] ^= 0xFF
 
 		_, err = udp.Decode(frame[:n], nil, false)
 		require.Error(t, err)
 	})
+}
+
+func BenchmarkEncode_IPv4(b *testing.B) {
+	const payloadSize = 512
+
+	src := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(net.IPv4(192, 168, 1, 1).To4()),
+		Port:     12345,
+		LinkAddr: tcpip.GetRandMacAddr(),
+	}
+
+	dst := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom4Slice(net.IPv4(192, 168, 1, 2).To4()),
+		Port:     54321,
+		LinkAddr: tcpip.GetRandMacAddr(),
+	}
+
+	frameSize := udp.PayloadOffsetIPv4 + payloadSize
+	frame := make([]byte, frameSize)
+
+	_, err := rand.Read(frame[udp.PayloadOffsetIPv4 : udp.PayloadOffsetIPv4+payloadSize])
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := udp.Encode(frame, &src, &dst, payloadSize, true)
+		if err != nil {
+			b.Fatalf("failed to encode: %v", err)
+		}
+	}
+}
+
+func BenchmarkEncode_IPv6(b *testing.B) {
+	const payloadSize = 512
+
+	src := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(net.ParseIP("2001:db8::1").To16()),
+		Port:     12345,
+		LinkAddr: tcpip.GetRandMacAddr(),
+	}
+
+	dst := tcpip.FullAddress{
+		Addr:     tcpip.AddrFrom16Slice(net.ParseIP("2001:db8::2").To16()),
+		Port:     54321,
+		LinkAddr: tcpip.GetRandMacAddr(),
+	}
+
+	frameSize := udp.PayloadOffsetIPv6 + payloadSize
+	frame := make([]byte, frameSize)
+
+	_, err := rand.Read(frame[udp.PayloadOffsetIPv6 : udp.PayloadOffsetIPv6+payloadSize])
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := udp.Encode(frame, &src, &dst, payloadSize, true)
+		if err != nil {
+			b.Fatalf("failed to encode: %v", err)
+		}
+	}
 }

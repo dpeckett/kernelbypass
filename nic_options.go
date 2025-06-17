@@ -68,8 +68,27 @@ func getOptionsForDevice(link netlink.Link) (*NetworkInterfaceOptions, error) {
 		}
 
 		if numQueues > int(channels.MaxCombined)/2 {
-			return nil, fmt.Errorf("ena driver oonly supports up to %d combined queues, got %d",
+			return nil, fmt.Errorf("ena driver only supports up to %d combined queues, currently %d",
 				channels.MaxCombined/2, numQueues)
+		}
+
+		return &NetworkInterfaceOptions{
+			NumQueues:   numQueues,
+			AttachFlags: xdp.DefaultXdpFlags,
+			SocketOpts: &xdp.SocketOptions{
+				NumFrames:              8192,
+				FrameSize:              2048,
+				FillRingNumDescs:       4096,
+				CompletionRingNumDescs: 4096,
+				RxRingNumDescs:         4096,
+				TxRingNumDescs:         4096,
+			},
+		}, nil
+	}
+
+	if strings.Contains(driverName, "mlx5") {
+		if link.Attrs().MTU > 3498 {
+			return nil, fmt.Errorf("mlx5 driver does not support XDP MTU > 3498, got %d", link.Attrs().MTU)
 		}
 
 		return &NetworkInterfaceOptions{

@@ -75,14 +75,16 @@ func Open(name string, handler Handler, ingressFilter *xdp.Program, opts *Networ
 
 		xsks = append(xsks, xsk)
 
-		if err := ingressFilter.Register(queueID, xsk.FD()); err != nil {
-			if ingressFilter != nil {
-				_ = ingressFilter.Detach(link.Attrs().Index)
+		if ingressFilter != nil {
+			if err := ingressFilter.Register(queueID, xsk.FD()); err != nil {
+				if ingressFilter != nil {
+					_ = ingressFilter.Detach(link.Attrs().Index)
+				}
+				for _, xsk := range xsks {
+					_ = xsk.Close()
+				}
+				return nil, fmt.Errorf("failed to register socket with XDP filter: %w", err)
 			}
-			for _, xsk := range xsks {
-				_ = xsk.Close()
-			}
-			return nil, fmt.Errorf("failed to register socket with XDP filter: %w", err)
 		}
 	}
 

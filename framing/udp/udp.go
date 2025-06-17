@@ -16,7 +16,7 @@ var (
 )
 
 // Decode extracts the source address and payload from a UDP ethernet frame.
-func Decode(frame []byte, addr *net.UDPAddr, skipChecksumValidation bool) ([]byte, error) {
+func Decode(frame []byte, addr *tcpip.FullAddress, skipChecksumValidation bool) ([]byte, error) {
 	var (
 		udp     header.UDP
 		srcAddr tcpip.Address
@@ -67,8 +67,9 @@ func Decode(frame []byte, addr *net.UDPAddr, skipChecksumValidation bool) ([]byt
 	}
 
 	if addr != nil {
-		addr.IP = net.IP(srcAddr.AsSlice())
-		addr.Port = int(udp.SourcePort())
+		addr.Addr = srcAddr
+		addr.Port = udp.SourcePort()
+		addr.LinkAddr = eth.SourceAddress()
 	}
 
 	return udp.Payload(), nil
@@ -77,15 +78,15 @@ func Decode(frame []byte, addr *net.UDPAddr, skipChecksumValidation bool) ([]byt
 // Encode constructs a UDP ethernet frame with the given parameters.
 // It assumes that the payload is already in the frame buffer at the correct
 // offset.
-func Encode(frame []byte, srcMAC, dstMAC net.HardwareAddr, srcAddr, dstAddr *net.UDPAddr, payloadLength int, skipChecksumCalculation bool) (int, error) {
+func Encode(frame []byte, src, dst *tcpip.FullAddress, payloadLength int, skipChecksumCalculation bool) (int, error) {
 	var offset int
 
-	isIPv6 := srcAddr.IP.To4() == nil
+	isIPv6 := src.Addr.Len() == net.IPv6len
 
 	eth := header.Ethernet(frame[offset:])
 	eth.Encode(&header.EthernetFields{
-		SrcAddr: tcpip.LinkAddress(srcMAC),
-		DstAddr: tcpip.LinkAddress(dstMAC),
+		SrcAddr: src.LinkAddr,
+		DstAddr: dst.LinkAddr,
 		Type: func() tcpip.NetworkProtocolNumber {
 			if isIPv6 {
 				return header.IPv6ProtocolNumber
@@ -96,32 +97,25 @@ func Encode(frame []byte, srcMAC, dstMAC net.HardwareAddr, srcAddr, dstAddr *net
 	offset += header.EthernetMinimumSize
 
 	udpPayloadLength := header.UDPMinimumSize + payloadLength
-	var srcAddrNetstack, dstAddrNetstack tcpip.Address
 
 	if isIPv6 {
-		srcAddrNetstack = tcpip.AddrFromSlice(srcAddr.IP.To16())
-		dstAddrNetstack = tcpip.AddrFromSlice(dstAddr.IP.To16())
-
 		ip := header.IPv6(frame[offset:])
 		ip.Encode(&header.IPv6Fields{
 			PayloadLength:     uint16(udpPayloadLength),
 			TransportProtocol: header.UDPProtocolNumber,
 			HopLimit:          64,
-			SrcAddr:           srcAddrNetstack,
-			DstAddr:           dstAddrNetstack,
+			SrcAddr:           src.Addr,
+			DstAddr:           dst.Addr,
 		})
 		offset += header.IPv6MinimumSize
 	} else {
-		srcAddrNetstack = tcpip.AddrFromSlice(srcAddr.IP.To4())
-		dstAddrNetstack = tcpip.AddrFromSlice(dstAddr.IP.To4())
-
 		ip := header.IPv4(frame[offset:])
 		ip.Encode(&header.IPv4Fields{
 			TotalLength: uint16(header.IPv4MinimumSize + udpPayloadLength),
 			TTL:         64,
 			Protocol:    uint8(header.UDPProtocolNumber),
-			SrcAddr:     srcAddrNetstack,
-			DstAddr:     dstAddrNetstack,
+			SrcAddr:     src.Addr,
+			DstAddr:     dst.Addr,
 		})
 		ip.SetChecksum(^ip.CalculateChecksum())
 		offset += header.IPv4MinimumSize
@@ -129,8 +123,8 @@ func Encode(frame []byte, srcMAC, dstMAC net.HardwareAddr, srcAddr, dstAddr *net
 
 	udp := header.UDP(frame[offset:])
 	udp.Encode(&header.UDPFields{
-		SrcPort: uint16(srcAddr.Port),
-		DstPort: uint16(dstAddr.Port),
+		SrcPort: src.Port,
+		DstPort: dst.Port,
 		Length:  uint16(udpPayloadLength),
 	})
 	offset += header.UDPMinimumSize
@@ -139,8 +133,8 @@ func Encode(frame []byte, srcMAC, dstMAC net.HardwareAddr, srcAddr, dstAddr *net
 		csum := udp.CalculateChecksum(checksum.Combine(
 			header.PseudoHeaderChecksum(
 				header.UDPProtocolNumber,
-				srcAddrNetstack,
-				dstAddrNetstack,
+				src.Addr,
+				dst.Addr,
 				uint16(udpPayloadLength),
 			),
 			checksum.Checksum(frame[offset:offset+payloadLength], 0),

@@ -3,6 +3,7 @@ package mac
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 
@@ -41,6 +42,10 @@ func Resolve(ctx context.Context, link netlink.Link, localAddr *net.UDPAddr, ip 
 
 		dstMAC, err = searchNeighborList(link, ip)
 		if err != nil {
+			slog.Debug("MAC address not yet resolved, retrying",
+				slog.String("ip", ip.String()),
+				slog.Any("error", err),
+			)
 			return err
 		}
 
