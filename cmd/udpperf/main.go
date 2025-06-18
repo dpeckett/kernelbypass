@@ -320,33 +320,45 @@ type SendHandler struct {
 	sentBytes      atomic.Int64
 }
 
-func (h *SendHandler) ReceivedFrame(queueID int, frame []byte) {
+func (h *SendHandler) BatchSize() int {
+	return 64
+}
+
+func (h *SendHandler) Receive(queueID int, frames [][]byte) {
 	// Nop
 }
 
-func (h *SendHandler) NextFrame(queueID int, frame []byte) (int, error) {
-	src := *h.src
-	src.Port = uint16(49152 + int(new(maphash.Hash).Sum64()%flows))
+func (h *SendHandler) Transmit(queueID int, frames [][]byte, lengths []int) int {
+	var populatedFrames int
+	for i, frame := range frames {
+		src := *h.src
+		src.Port = uint16(49152 + int(new(maphash.Hash).Sum64()%flows))
 
-	var datagramSize int
-	if h.realisticSizes {
-		datagramSize = realisticPacketSizes[new(maphash.Hash).Sum64()%uint64(len(realisticPacketSizes))]
-	} else if src.Addr.Len() == net.IPv6len {
-		datagramSize = 1432
-	} else {
-		datagramSize = 1458
+		var datagramSize int
+		if h.realisticSizes {
+			datagramSize = realisticPacketSizes[new(maphash.Hash).Sum64()%uint64(len(realisticPacketSizes))]
+		} else if src.Addr.Len() == net.IPv6len {
+			datagramSize = 1432
+		} else {
+			datagramSize = 1458
+		}
+
+		copy(frame[:udp.PayloadOffsetIPv4], h.payload[:datagramSize])
+		frameLen, err := udp.Encode(frame, &src, h.dst, datagramSize, h.skipChecksum)
+		if err != nil {
+			slog.Error("Failed to encode UDP frame",
+				slog.Any("error", err))
+			break
+		}
+
+		h.sentFrames.Add(1)
+		h.sentBytes.Add(int64(frameLen))
+
+		lengths[i] = frameLen
+		populatedFrames++
 	}
 
-	copy(frame[:udp.PayloadOffsetIPv4], h.payload[:datagramSize])
-	frameLen, err := udp.Encode(frame, &src, h.dst, datagramSize, h.skipChecksum)
-	if err != nil {
-		return 0, err
-	}
-
-	h.sentFrames.Add(1)
-	h.sentBytes.Add(int64(frameLen))
-
-	return frameLen, nil
+	return populatedFrames
 }
 
 func (h *SendHandler) Report(ctx context.Context) {
@@ -374,18 +386,24 @@ type ReceiveHandler struct {
 	receivedBytes  atomic.Int64
 }
 
-func (h *ReceiveHandler) ReceivedFrame(queueID int, frame []byte) {
-	_, err := udp.Decode(frame, nil, h.skipChecksum)
-	if err != nil {
-		slog.Warn("Failed to decode UDP frame", slog.Any("error", err))
-	}
-
-	h.receivedFrames.Add(1)
-	h.receivedBytes.Add(int64(len(frame)))
+func (h *ReceiveHandler) BatchSize() int {
+	return 64
 }
 
-func (h *ReceiveHandler) NextFrame(queueID int, frame []byte) (int, error) {
-	return 0, kernelbypass.ErrWouldBlock
+func (h *ReceiveHandler) Receive(queueID int, frames [][]byte) {
+	for _, frame := range frames {
+		_, err := udp.Decode(frame, nil, h.skipChecksum)
+		if err != nil {
+			slog.Warn("Failed to decode UDP frame", slog.Any("error", err))
+		}
+
+		h.receivedFrames.Add(1)
+		h.receivedBytes.Add(int64(len(frame)))
+	}
+}
+
+func (h *ReceiveHandler) Transmit(queueID int, frames [][]byte, lengths []int) int {
+	return 0
 }
 
 func (h *ReceiveHandler) Report(ctx context.Context) {

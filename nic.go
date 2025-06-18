@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"runtime"
 
 	"github.com/slavc/xdp"
@@ -15,19 +14,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ErrWouldBlock should be returned by Handler.NextFrame when no frame is
-// available to send.
-var ErrWouldBlock = errors.New("would block")
-
 // Handler is an interface that defines methods for processing frames in a
 // kernel-bypass network interface using XDP. The handler should not block.
 type Handler interface {
-	// ReceivedFrame is called when a new frame is received.
-	ReceivedFrame(queueID int, frame []byte)
-	// NextFrame is called when a new frame buffer becomes available.
-	// It returns the number of bytes written to the frame buffer, or an error.
-	// If you don't want to send a frame, return ErrWouldBlock.
-	NextFrame(queueID int, frame []byte) (int, error)
+	// BatchSize returns the maximum number of frames that can be processed
+	// in a single batch.
+	BatchSize() int
+	// Receive is called when new frames are received.
+	Receive(queueID int, frames [][]byte)
+	// Transmit is called to prepare frames for transmission.
+	// It returns the number of frames that were successfully prepared for
+	// transmission. The frames should be filled with the data to be sent.
+	// The lengths slice should be filled with the lengths of each frame.
+	Transmit(queueID int, frames [][]byte, lengths []int) int
 }
 
 // NetworkInterface represents a network interface that uses XDP for
@@ -138,6 +137,10 @@ func (nic *NetworkInterface) processFrames(ctx context.Context, queueID int, xsk
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	batchSize := nic.handler.BatchSize()
+	frames := make([][]byte, batchSize)
+	lengths := make([]int, batchSize)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -156,9 +159,19 @@ func (nic *NetworkInterface) processFrames(ctx context.Context, queueID int, xsk
 
 		if numReceived > 0 {
 			rxDescs := xsk.Receive(numReceived)
-			for _, desc := range rxDescs {
-				frame := xsk.GetFrame(desc)
-				nic.handler.ReceivedFrame(queueID, frame)
+
+			for i := 0; i < len(rxDescs); i += batchSize {
+				end := i + batchSize
+				if end > len(rxDescs) {
+					end = len(rxDescs)
+				}
+
+				batch := rxDescs[i:end]
+				for j := range batch {
+					frames[j] = xsk.GetFrame(batch[j])
+				}
+
+				nic.handler.Receive(queueID, frames[:len(batch)])
 			}
 		}
 
@@ -167,24 +180,29 @@ func (nic *NetworkInterface) processFrames(ctx context.Context, queueID int, xsk
 			continue
 		}
 
-		var populatedDescs int
-		for i := range txDescs {
-			frame := xsk.GetFrame(txDescs[i])
-
-			n, err := nic.handler.NextFrame(queueID, frame)
-			if err != nil {
-				if !errors.Is(err, ErrWouldBlock) {
-					slog.Warn("NextFrame failed", slog.Any("error", err))
-				}
-				break
+		for i := 0; i < len(txDescs); i += batchSize {
+			end := i + batchSize
+			if end > len(txDescs) {
+				end = len(txDescs)
 			}
 
-			txDescs[i].Len = uint32(n)
-			populatedDescs++
-		}
+			batchDescs := txDescs[i:end]
+			for j := range batchDescs {
+				frames[j] = xsk.GetFrame(batchDescs[j])
+			}
 
-		if populatedDescs > 0 {
-			xsk.Transmit(txDescs[:populatedDescs])
+			lengths = lengths[:len(batchDescs)]
+			numToTransmit := nic.handler.Transmit(queueID, frames[:len(batchDescs)], lengths)
+
+			for j, length := range lengths[:numToTransmit] {
+				batchDescs[j].Len = uint32(length)
+			}
+
+			if numToTransmit > 0 {
+				xsk.Transmit(batchDescs[:numToTransmit])
+			} else {
+				break
+			}
 		}
 	}
 }
