@@ -180,29 +180,33 @@ func (nic *NetworkInterface) processFrames(ctx context.Context, queueID int, xsk
 			continue
 		}
 
-		for i := 0; i < len(txDescs); i += batchSize {
-			end := i + batchSize
+		var numToTransmit int
+		for numToTransmit < len(txDescs) {
+			end := numToTransmit + batchSize
 			if end > len(txDescs) {
 				end = len(txDescs)
 			}
 
-			batchDescs := txDescs[i:end]
+			batchDescs := txDescs[numToTransmit:end]
 			for j := range batchDescs {
 				frames[j] = xsk.GetFrame(batchDescs[j])
 			}
 
 			lengths = lengths[:len(batchDescs)]
-			numToTransmit := nic.handler.Transmit(queueID, frames[:len(batchDescs)], lengths)
+			n := nic.handler.Transmit(queueID, frames[:len(batchDescs)], lengths)
+			if n <= 0 {
+				break
+			}
 
-			for j, length := range lengths[:numToTransmit] {
+			for j, length := range lengths[:n] {
 				batchDescs[j].Len = uint32(length)
 			}
 
-			if numToTransmit > 0 {
-				xsk.Transmit(batchDescs[:numToTransmit])
-			} else {
-				break
-			}
+			numToTransmit += n
+		}
+
+		if numToTransmit > 0 {
+			xsk.Transmit(txDescs[:numToTransmit])
 		}
 	}
 }
